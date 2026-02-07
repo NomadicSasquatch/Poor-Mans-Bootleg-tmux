@@ -11,5 +11,6 @@ parser.add_argument("--greet", action="store_true", required=True, help="Include
 
 args = parser.parse_args()
 
+# emoji for encoding check
 for i in range(args.clone_count):
-    print(f"Hello, {args.clone_name}{i}!")
+    print(f"👽 says: Hello, {args.clone_name}{i}!")
