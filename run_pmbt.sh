@@ -26,6 +26,9 @@ UI backends (mode=windows):
 -s
     Path to script that is going to be executed in every terminal
 
+-v
+    Path to venv if the script needs it
+
 -p
     Launcher
 
@@ -57,6 +60,7 @@ MODE="windows"
 UI="wt"
 KEEP_OPEN=0
 SCRIPT_PATH="C:/Users/Example/Poor-Mans-Bootleg-tmux/tester.py"
+VENV_PATH='C:/Users/Example/Poor-Mans-Bootleg-tmux/venv/'
 # eg 'py -3 -m pytest'
 PYTHON_STR='pytest'
 TITLE_PREFIX="Spawned_Window"
@@ -77,6 +81,7 @@ while [[ $# -gt 0 ]]; do
     --ui) UI="$2"; shift 2;;
     -k|--keep-open) KEEP_OPEN=1; shift;;
     -s|--script) SCRIPT_PATH="$2"; shift 2;;
+    -v|--venv-path) VENV_PATH="$2"; shift 2;;
     -p|--python) PYTHON_STR="$2"; shift 2;;
     -t|--title-prefix) TITLE_PREFIX="$2"; shift 2;;
     --log-dir) LOG_DIR="$2"; shift 2;;
@@ -97,6 +102,7 @@ mkdir -p "$LOG_DIR"
 
 # tokenising python launcher ie so it supports: -p "py -3 -m pytest"
 read -r -a PYTHON_CMD <<< "$PYTHON_STR"
+venv_act="source $(printf '%q' "${VENV_PATH%/}/Scripts/activate")"
 
 # source .env
 # echo "The database user is: $SCRIPT_PATH"
@@ -116,8 +122,7 @@ spawn_wt_tab() {
   local title="$1"; shift
   local cmd_str; cmd_str="$(bash_join "$@")"
   local log="$LOG_DIR/$title.log"
-  local venv_act="source 'C:/Users/deez nuts/VSCode_Local_MegaFolder/bash_proj/Poor-Mans-Bootleg-tmux/venv/Scripts/activate'"
-  
+
   local keep=""
   if (( KEEP_OPEN )); then
     keep="&& echo && echo Exit code: \$rc && cd $(printf '%q' "$CWD") && exec bash || cd $(printf '%q' "$CWD") && exec bash"
