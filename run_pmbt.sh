@@ -10,7 +10,7 @@ export MSYS2_ARG_CONV_EXCL="*"
 usage() {
 cat <<'EOF'
 Usage:
-    run_pmbt.sh -n N [--mode windows|bg] [--ui wt] [-k] \
+    run_pmbt.sh -n N [--mode windows|bg] [--ui wt] [--env-file .env|PATH] [-k] \
     [-s script] [-p "python launcher"] [-t title] [-- extra...]
 
 Modes:
@@ -18,7 +18,11 @@ Modes:
     bg ------> Run N workers concurrently in background, write logs, no terminals
 
 UI backends (mode=windows):
-    wt ------> Windows Terminal tabs (recommended)
+    wt ------> Windows Terminal tabs
+
+--env-file PATH:
+    Load KEY=VALUE pairs from PATH (default: .env). Safe parser: does not execute code.
+    Precedence: defaults < env-file < environment < CLI flags
 
 -k / --keep-open:
     In windows mode, keep terminal open after the command, for debugging
@@ -54,24 +58,76 @@ Examples:
 EOF
 }
 
-# defaults for flags
-NUM=""
-MODE="windows"
-UI="wt"
-KEEP_OPEN=0
-SCRIPT_PATH="C:/Users/Example/Poor-Mans-Bootleg-tmux/tester.py"
-VENV_PATH='C:/Users/Example/Poor-Mans-Bootleg-tmux/venv/'
-# eg 'py -3 -m pytest'
-PYTHON_STR='pytest'
-TITLE_PREFIX="Spawned_Window"
-LOG_DIR="./logs"
-CWD="$(pwd)"
-EXTRA=()
+ENV_FILE="${ENV_FILE:-.env}"
 
-STARTDIR_WIN="$(cygpath -w "$CWD")"
-BASH_WIN="$(cygpath -w "$(command -v bash)")"
-# some of the scripts have emojis... need appropriate parsing for that otherwise script throws unicode encoding error
-UTF8_SETUP="export PYTHONIOENCODING=utf-8"
+load_env_file() {
+  local f="$1" line k v
+  [[ -f "$f" ]] || return 0
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    # to handle CRLF
+    line="${line%$'\r'}"
+    [[ "$line" =~ ^[[:space:]]*$ ]] && continue
+    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+
+    # allow: export KEY=VALUE
+    if [[ "$line" =~ ^[[:space:]]*export[[:space:]] ]]; then
+      line="${line#export }"
+      line="${line#"${line%%[![:space:]]*}"}"
+    fi
+
+    [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || continue
+
+    k="${line%%=*}"
+    v="${line#*=}"
+
+    # trim whitespace around key & value
+    k="${k%%[[:space:]]*}"
+    v="${v#"${v%%[![:space:]]*}"}"
+    v="${v%"${v##*[![:space:]]}"}"
+
+    # strip surrounding matching quotes without eval
+    if [[ "$v" == \"*\" && "$v" == *\" ]]; then
+      v="${v:1:${#v}-2}"
+    elif [[ "$v" == \'*\' && "$v" == *\' ]]; then
+      v="${v:1:${#v}-2}"
+    fi
+
+    # do not override already-set environment variables
+    if [[ -z "${!k+x}" ]]; then
+      export "$k=$v"
+    fi
+  done < "$f"
+}
+
+# pre scant argv for --env-file so we can load it before main arg parsing
+ARGS=("$@")
+for ((j=0; j<${#ARGS[@]}; j++)); do
+  if [[ "${ARGS[j]}" == "--env-file" ]]; then
+    ENV_FILE="${ARGS[j+1]:-}"
+    [[ -n "$ENV_FILE" ]] || { echo "Error: --env-file requires a path" >&2; exit 1; }
+    break
+  fi
+done
+
+load_env_file "$ENV_FILE"
+
+# defaults for flags that aare only applied if not set by .env
+# 
+: "${NUM:=}"
+: "${MODE:=windows}"
+: "${UI:=wt}"
+: "${KEEP_OPEN:=0}"
+: "${SCRIPT_PATH:=}"
+: "${VENV_PATH:=./venv/}"
+: "${PYTHON_STR:=pytest}" # eg 'py -3 -m pytest'
+: "${TITLE_PREFIX:=Spawned_Window}"
+: "${LOG_DIR:=./logs}"
+if [[ -z "${CWD+x}" ]]; then
+  CWD="$(pwd)"
+fi
+
+EXTRA=()
 
 # arg parsing
 while [[ $# -gt 0 ]]; do
@@ -79,6 +135,7 @@ while [[ $# -gt 0 ]]; do
     -n|--num) NUM="$2"; shift 2;;
     --mode) MODE="$2"; shift 2;;
     --ui) UI="$2"; shift 2;;
+    --env-file) shift 2;;
     -k|--keep-open) KEEP_OPEN=1; shift;;
     -s|--script) SCRIPT_PATH="$2"; shift 2;;
     -v|--venv-path) VENV_PATH="$2"; shift 2;;
@@ -93,21 +150,20 @@ while [[ $# -gt 0 ]]; do
 done
 
 # flag validation
-[[ -n "$NUM" ]] || { echo "Error: --num is required" >&2; usage; exit 1; }
+[[ -n "$NUM" ]] || { echo "Error: --num is required (or set NUM in .env)" >&2; usage; exit 1; }
 [[ "$NUM" =~ ^[1-9][0-9]*$ ]] || { echo "Error: --num must be a positive integer" >&2; exit 1; }
 [[ "$MODE" == "windows" || "$MODE" == "bg" ]] || { echo "Error: --mode windows|bg" >&2; exit 1; }
 [[ "$UI" == "wt" ]] || { echo "Error: --ui wt" >&2; exit 1; }
 
 mkdir -p "$LOG_DIR"
+STARTDIR_WIN="$(cygpath -w "$CWD")"
+BASH_WIN="$(cygpath -w "$(command -v bash)")"
+# some of the scripts have emojis... need appropriate parsing for that otherwise script throws unicode encoding error
+UTF8_SETUP="export PYTHONIOENCODING=utf-8"
 
 # tokenising python launcher ie so it supports: -p "py -3 -m pytest"
 read -r -a PYTHON_CMD <<< "$PYTHON_STR"
 venv_act="source $(printf '%q' "${VENV_PATH%/}/Scripts/activate")"
-
-# source .env
-# echo "The database user is: $SCRIPT_PATH"
-# echo "The database user is: $SCRIPT_PATH"
-# echo "The database user is: $SCRIPT_PATH"
 
 # quote argv for embedding into: bash -c "<string>"
 bash_join() {
