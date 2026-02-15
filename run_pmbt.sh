@@ -120,7 +120,7 @@ load_env_file "$ENV_FILE"
 : "${KEEP_OPEN:=0}"
 : "${SCRIPT_PATH:=}"
 : "${VENV_PATH:=./venv/}"
-: "${PYTHON_STR:=pytest}" # eg 'py -3 -m pytest'
+: "${PYTHON_STR:=pytest --color=yes}" # eg 'py -3 -m pytest'
 : "${TITLE_PREFIX:=Spawned_Window}"
 : "${LOG_DIR:=./logs}"
 if [[ -z "${CWD+x}" ]]; then
@@ -191,9 +191,11 @@ spawn_wt_tab() {
   # echo $VIRTUAL_ENV in the entire -c argument in the parent shell has to be wrapped in double quotes first, then single in the actual echo statement since the argument is in double quotes which expands all $ params, and not having double quotes will expand the VIRTUAL_ENV first before wt.exe even runs, giving unbound local error. This makes it such that the param is expanded in the child shell
   local terminal_debug="echo -n 'pwd: ' && pwd && echo 'DEBUG: Venv Activation Command: $venv_act'"
 
-  wt.exe new-tab --title "$title" --startingDirectory "$STARTDIR_WIN" -- \
+  # coudl append '2>&1 | tee -a $(printf '%q' "$log") && rc=\$?${keep}' to add logs and redirect standard error, but introduces io contention
+  # & suffix brackgrounds the wt.exe launcher process so we can get and track the pid for debug and pkill like in run_bg
+  wt.exe -w 0 new-tab --title "$title" --startingDirectory "$STARTDIR_WIN" -- \
     "$BASH_WIN" -c \
-    "$terminal_debug && $UTF8_SETUP && $venv_act && echo "'DEBUG: Virtual Env: $VIRTUAL_ENV'" && $cmd_str 2>&1 | tee -a $(printf '%q' "$log") && rc=\$?${keep}"
+    "$terminal_debug && $UTF8_SETUP && $venv_act && echo "'DEBUG: Virtual Env: $VIRTUAL_ENV'" && $cmd_str $keep" &
 }
 
 run_bg() {
@@ -231,6 +233,8 @@ for (( i=1; i<=NUM; i++ )); do
   else
     run_bg "$title" "${worker_cmd[@]}"
   fi
+
+  sleep 1
 done
 
 if [[ "$MODE" == "bg" ]]; then
