@@ -212,8 +212,8 @@ spawn_wt_tab() {
 }
 
 run_bg() {
-  # background job with log
-  ( cd "$CWD" && $UTF8_SETUP && $venv_act && "$@" >"$LOG_DIR/$title.log" 2>&1 ) &
+  local title="$1"; shift
+  ( cd "$CWD" && $UTF8_SETUP && "$@" >"$LOG_DIR/$title.log" 2>&1 ) &
   echo "$!" > "$LOG_DIR/$title.pid"
 }
 
