@@ -163,7 +163,20 @@ UTF8_SETUP="export PYTHONIOENCODING=utf-8"
 
 # tokenising python launcher ie so it supports: -p "py -3 -m pytest"
 read -r -a PYTHON_CMD <<< "$PYTHON_STR"
-venv_act="source $(printf '%q' "${VENV_PATH%/}/Scripts/activate")"
+# venv_act="source $(printf '%q' "${VENV_PATH%/}/Scripts/activate")"
+# USE_VENV_PY=0 to disable
+: "${USE_VENV_PY:=1}"
+
+VENV_PY_POSIX="${VENV_PATH%/}/Scripts/python.exe"
+
+if (( USE_VENV_PY )) && [[ -x "$VENV_PY_POSIX" ]]; then
+  case "${PYTHON_CMD[0]}" in
+    # common launchers - replace with venv python
+    python|python3|py) PYTHON_CMD=("$VENV_PY_POSIX" "${PYTHON_CMD[@]:1}");;
+    # if someone uses -p "pytest", make it venv python -m pytest
+    pytest) PYTHON_CMD=("$VENV_PY_POSIX" -m pytest "${PYTHON_CMD[@]:1}");;
+  esac
+fi
 
 # quote argv for embedding into: bash -c "<string>"
 bash_join() {
@@ -189,13 +202,13 @@ spawn_wt_tab() {
   echo "DEBUG: Cmd Str: $cmd_str"
 
   # echo $VIRTUAL_ENV in the entire -c argument in the parent shell has to be wrapped in double quotes first, then single in the actual echo statement since the argument is in double quotes which expands all $ params, and not having double quotes will expand the VIRTUAL_ENV first before wt.exe even runs, giving unbound local error. This makes it such that the param is expanded in the child shell
-  local terminal_debug="echo -n 'pwd: ' && pwd && echo 'DEBUG: Venv Activation Command: $venv_act'"
+  local terminal_debug="echo -n 'pwd: ' && pwd && echo 'DEBUG: Venv Check: $VENV_PY_POSIX'"
 
   # coudl append '2>&1 | tee -a $(printf '%q' "$log") && rc=\$?${keep}' to add logs and redirect standard error, but introduces io contention
   # & suffix brackgrounds the wt.exe launcher process so we can get and track the pid for debug and pkill like in run_bg
   wt.exe -w 0 new-tab --title "$title" --startingDirectory "$STARTDIR_WIN" -- \
     "$BASH_WIN" -c \
-    "$terminal_debug && $UTF8_SETUP && $venv_act && echo "'DEBUG: Virtual Env: $VIRTUAL_ENV'" && $cmd_str $keep" &
+    "$terminal_debug && $UTF8_SETUP && $cmd_str $keep" &
 }
 
 run_bg() {
