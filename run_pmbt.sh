@@ -55,6 +55,9 @@ Examples:
     # Running with flags involved in the script itself:
     ./run_pmbt.sh -n 4 --mode windows --ui wt -k --valid_int=2 --valid_bool=False --valid_input_file="C:/Users/Example/Poor-Mans-Bootleg-tmux/Input"
 
+    # 4 visible Windows Terminal tabs, 3 panes in each tab
+    ./run_pmbt.sh -n 2 --mode windows --wt-panes 3 --env-file .env -k -p "python" -s "C:/Users/Example/Poor-Mans-Bootleg-tmux/tester.py" --clone_name="garry" --clone_count=5 --greet 
+
   
 ##### IMPORTANT #####
 && is used as a delimiter instead of ;. wt.exe's command parsing happens at the terminal layer, it may split on ; even when the Windows/Unix quoting rules would suggest it shouldn't. Windows Terminal can interpret ; "anywhere, in any argument" as a delimiter,
@@ -163,6 +166,8 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     -l|--window-layout) WT_LAYOUT="$2"; shift 2;;
     -z|--split-layout) WT_SPLIT_FLAG="$2"; shift 2;;
+    --wt-tabs) WT_TABS="$2"; shift 2;;
+    --wt-panes) WT_PANES_PER_TAB="$2"; shift 2;;
     -n|--num) NUM="$2"; shift 2;;
     --mode) MODE="$2"; shift 2;;
     --ui) UI="$2"; shift 2;;
@@ -185,6 +190,8 @@ done
 [[ "$NUM" =~ ^[1-9][0-9]*$ ]] || { echo "Error: --num must be a positive integer" >&2; exit 1; }
 [[ "$MODE" == "windows" || "$MODE" == "bg" ]] || { echo "Error: --mode windows|bg" >&2; exit 1; }
 [[ "$UI" == "wt" ]] || { echo "Error: --ui wt" >&2; exit 1; }
+[[ "$WT_TABS" =~ ^[0-9]+$ ]] || { echo "Error: --wt-tabs must be >= 0" >&2; exit 1; }
+[[ "$WT_PANES_PER_TAB" =~ ^[0-9]+$ ]] || { echo "Error: --wt-panes must be >= 0" >&2; exit 1; }
 
 mkdir -p "$LOG_DIR"
 STARTDIR_WIN="$(cygpath -w "$CWD")"
@@ -277,6 +284,49 @@ wt_queue_worker() {
   fi
 }
 
+SO IMPORTANT THAT THIS WILL BREAK IF RAN: FIX THE REPORT OUTPUT UNIQUE ID-ING
+
+wt_queue_worker_matrix() {
+  local title="$1"
+  local i="$2"
+  shift 2
+
+  local cmd_str; cmd_str="$(bash_join "$@")"
+
+  local tail=""
+  if (( KEEP_OPEN )); then
+    tail="&& echo && echo Exit code: \$rc && cd $(printf '%q' "$CWD") && exec bash"
+  fi
+
+  # make tail always run even if cmd fails
+  local inner="rc=0 && $UTF8_SETUP && cd $(printf '%q' "$CWD") && $cmd_str || rc=\$?"
+
+  # decision on whether to start a new tab or split a pane
+  local panes="$WT_PANES_PER_TAB"
+  # 0 to panes-1
+  local pos_in_tab=$(( (i - 1) % panes ))
+  # 0 based tab index
+  local tab_idx=$(( (i - 1) / panes ))
+
+  # optional cap - every WT_TABS tabs start a new WT session (window). if WT_TABS==0, unlimited tabs in same window
+  # If you want multi-window later, we can flush/reset when tab_idx % WT_TABS == 0 and pos_in_tab==0.
+  if (( WT_TABS > 0 )) && (( tab_idx >= WT_TABS )); then
+    # ignore cap and keep adding tabs or TODO: can implement multi-window flushing here
+    :
+  fi
+
+  if (( WT_HAS_SESSION == 0 )) || (( pos_in_tab == 0 )); then
+    # new tab for first pane in this tab group
+    wt_queue new-tab --title "$title" --startingDirectory "$STARTDIR_WIN" -- \
+      "$BASH_WIN" -c "$inner $tail"
+  else
+    # remaining panes in the current tab
+    wt_queue split-pane "$WT_SPLIT_FLAG" --title "$title" --startingDirectory "$STARTDIR_WIN" -- \
+      "$BASH_WIN" -c "$inner $tail"
+  fi
+}
+
+
 run_bg() {
   local title="$1"; shift
   ( cd "$CWD" && $UTF8_SETUP && "$@" >"$LOG_DIR/$title.log" 2>&1 ) &
@@ -301,12 +351,20 @@ for (( i=1; i<=NUM; i++ )); do
 
   # '#' is interpreted as '/' for better readability when there are '/' within the regex
   # sed -r 's##'
-
-  echo -e "Launching ($MODE/$UI): $title -> ${worker_cmd[*]} \n"
-
+  cmd_pretty="$(bash_join "${worker_cmd[@]}")"
+  
   if [[ "$MODE" == "windows" ]]; then
     if [[ "$UI" == "wt" ]]; then
-      wt_queue_worker "$WT_LAYOUT" "$title" "${worker_cmd[@]}"
+      if (( WT_PANES_PER_TAB > 0 )); then
+        tab_idx=$(( (i - 1) / WT_PANES_PER_TAB + 1 ))
+        pane_idx=$(( (i - 1) % WT_PANES_PER_TAB + 1 ))
+        echo -e "Launching ($MODE/$UI): $title -> [tab $tab_idx pane $pane_idx] $cmd_pretty\n"
+        wt_queue_worker_matrix "$title" "$i" "${worker_cmd[@]}"
+        echo -e "Launching ($MODE/$UI): $title -> [tab $tab_idx pane $pane_idx] $cmd_pretty\n"
+      else
+        echo -e "Launching ($MODE/$UI): $title -> $cmd_pretty\n"
+        wt_queue_worker "$WT_LAYOUT" "$title" "${worker_cmd[@]}"
+      fi
     fi
   else
     run_bg "$title" "${worker_cmd[@]}"
