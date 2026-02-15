@@ -39,7 +39,6 @@ UI backends (mode=windows):
 -t
     Title of the terminals that are being spawned(would be appended with iteration numbers eg Title-1, Title-2, ...)
 
-# TODO: Parse from config json?
 -- extra flags:
     The flags and values of the script you are running. Onus is on you to type everything correctly (so the flags/values are valid in the context of the script)
 
@@ -55,6 +54,10 @@ Examples:
 
     # Running with flags involved in the script itself:
     ./run_pmbt.sh -n 4 --mode windows --ui wt -k --valid_int=2 --valid_bool=False --valid_input_file="C:/Users/Example/Poor-Mans-Bootleg-tmux/Input"
+
+  
+##### IMPORTANT #####
+&& is used as a delimiter instead of ;. wt.exe's command parsing happens at the terminal layer, it may split on ; even when the Windows/Unix quoting rules would suggest it shouldn't. Windows Terminal can interpret ; "anywhere, in any argument" as a delimiter,
 EOF
 }
 
@@ -117,21 +120,49 @@ load_env_file "$ENV_FILE"
 : "${NUM:=}"
 : "${MODE:=windows}"
 : "${UI:=wt}"
-: "${KEEP_OPEN:=0}"
+: "${KEEP_OPEN:=1}"
 : "${SCRIPT_PATH:=}"
 : "${VENV_PATH:=./venv/}"
 : "${PYTHON_STR:=pytest --color=yes}" # eg 'py -3 -m pytest'
 : "${TITLE_PREFIX:=Spawned_Window}"
 : "${LOG_DIR:=./logs}"
+# for wt batching, instead of running N times 
+# tabs || panes
+: "${WT_LAYOUT:=panes}"
+# -H or -V (horizontal or vertical) as per WT docs: contentReference[oaicite:2]{index=2}
+: "${WT_SPLIT_FLAG:=-H}"
+: "${WT_TABS:=1}"          # 0 = unlimited tabs
+: "${WT_PANES_PER_TAB:=0}" # 0 = disabled (use WT_LAYOUT)
+
 if [[ -z "${CWD+x}" ]]; then
   CWD="$(pwd)"
 fi
 
 EXTRA=()
+WT_CMD=( wt.exe -w 0 )
+WT_HAS_SESSION=0
+
+wt_queue() {
+  # queues a single WT subcommand and adds delimiter
+  WT_CMD+=( "$@" ';' )
+  WT_HAS_SESSION=1
+}
+
+wt_flush() {
+  (( WT_HAS_SESSION )) || return 0
+  # drop trailing delimiter if present
+  local last_idx=$(( ${#WT_CMD[@]} - 1 ))
+  if (( last_idx >= 0 )) && [[ "${WT_CMD[$last_idx]}" == ';' ]]; then
+    unset "WT_CMD[$last_idx]"
+  fi
+  "${WT_CMD[@]}"
+}
 
 # arg parsing
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    -l|--window-layout) WT_LAYOUT="$2"; shift 2;;
+    -z|--split-layout) WT_SPLIT_FLAG="$2"; shift 2;;
     -n|--num) NUM="$2"; shift 2;;
     --mode) MODE="$2"; shift 2;;
     --ui) UI="$2"; shift 2;;
@@ -169,7 +200,7 @@ read -r -a PYTHON_CMD <<< "$PYTHON_STR"
 
 VENV_PY_POSIX="${VENV_PATH%/}/Scripts/python.exe"
 
-if (( USE_VENV_PY )) && [[ -x "$VENV_PY_POSIX" ]]; then
+if (( USE_VENV_PY )) && [[ -f "$VENV_PY_POSIX" ]]; then
   case "${PYTHON_CMD[0]}" in
     # common launchers - replace with venv python
     python|python3|py) PYTHON_CMD=("$VENV_PY_POSIX" "${PYTHON_CMD[@]:1}");;
@@ -211,6 +242,41 @@ spawn_wt_tab() {
     "$terminal_debug && $UTF8_SETUP && $cmd_str $keep" &
 }
 
+wt_queue_worker() {
+  # panes or tabs
+  local layout="$1"
+  local title="$2"; shift 2
+
+  local cmd_str; cmd_str="$(bash_join "$@")"
+  local log="$LOG_DIR/$title.log"
+
+  local tail=""
+  if (( KEEP_OPEN )); then
+    # Always run, even if inner fails:
+    tail="&& rc=\$? && echo && echo Exit code: \$rc && cd $(printf '%q' "$CWD") && exec bash"
+  fi
+  
+  # utf8 + cd + run + log redirect (faster than tee, but seems like it bugs with pytest script, have to pass -s flags)
+  local inner="$UTF8_SETUP && cd $(printf '%q' "$CWD") && $cmd_str"
+
+  if (( WT_HAS_SESSION == 0 )); then
+    # first worker should open a tab
+    wt_queue new-tab --title "$title" --startingDirectory "$STARTDIR_WIN" -- \
+      "$BASH_WIN" -c "$inner $tail"
+    return 0
+  fi
+
+  if [[ "$layout" == "panes" ]]; then
+    # next workers to split panes if panes mode
+    wt_queue split-pane "$WT_SPLIT_FLAG" --title "$title" --startingDirectory "$STARTDIR_WIN" -- \
+      "$BASH_WIN" -c "$inner $tail"
+  else
+    # tabs mode
+    wt_queue new-tab --title "$title" --startingDirectory "$STARTDIR_WIN" -- \
+      "$BASH_WIN" -c "$inner $tail"
+  fi
+}
+
 run_bg() {
   local title="$1"; shift
   ( cd "$CWD" && $UTF8_SETUP && "$@" >"$LOG_DIR/$title.log" 2>&1 ) &
@@ -227,12 +293,11 @@ for (( i=1; i<=NUM; i++ )); do
     expanded_extra+=("${arg//\$\{i\}/${i}}")
   done
 
-  # per worker argv with no embedded quotes
-  worker_cmd=(
-    "${PYTHON_CMD[@]}"
-    "$SCRIPT_PATH"
-    "${expanded_extra[@]}"
-  )
+  worker_cmd=( "${PYTHON_CMD[@]}" )
+  if [[ -n "$SCRIPT_PATH" ]]; then
+    worker_cmd+=( "$SCRIPT_PATH" )
+  fi
+  worker_cmd+=( "${expanded_extra[@]}" )
 
   # '#' is interpreted as '/' for better readability when there are '/' within the regex
   # sed -r 's##'
@@ -241,14 +306,18 @@ for (( i=1; i<=NUM; i++ )); do
 
   if [[ "$MODE" == "windows" ]]; then
     if [[ "$UI" == "wt" ]]; then
-      spawn_wt_tab "$title" "${worker_cmd[@]}"
+      wt_queue_worker "$WT_LAYOUT" "$title" "${worker_cmd[@]}"
     fi
   else
     run_bg "$title" "${worker_cmd[@]}"
-  fi
+  fi  
 
   sleep 1
 done
+
+if [[ "$MODE" == "windows" ]]; then
+  wt_flush
+fi
 
 if [[ "$MODE" == "bg" ]]; then
   echo
