@@ -372,8 +372,6 @@ for (( i=1; i<=NUM; i++ )); do
   else
     run_bg "$title" "${worker_cmd[@]}"
   fi  
-
-  sleep 1
 done
 
 if [[ "$MODE" == "windows" ]]; then
